@@ -142,13 +142,35 @@ class QueryProcessor:
         # تنظيف الرسالة
         clean_message = user_message.strip()
         
+        # فحص النمط المحدد "دلني على حي قريب من منطقة X وفيه مدارس"
+        if "دلني على حي" in clean_message and ("قريب من" in clean_message or "في منطقة" in clean_message) and ("مدارس" in clean_message or "مدرسة" in clean_message):
+            logger.info(f"تم تحديد طلب توصية حي بالقرب من منطقة معينة مع مدارس: {clean_message}")
+            result['query_type'] = 'neighborhood_recommendation'
+            result['intents'].add('neighborhood_recommendation')
+            
+            # استخراج المرافق المطلوبة
+            result['entities']['proximity_facilities'] = [{
+                'text': 'مدارس',
+                'type': 'مدرسة'
+            }]
+            
+            # محاولة استخراج المنطقة
+            area_match = re.search(r'(?:قريب من|في) منطقة ([\u0600-\u06FF\s]+?)(?:\s|$|و)', clean_message)
+            if area_match:
+                result['entities']['area'] = area_match.group(1).strip()
+                
+            return result
+            
         # البحث عن أنماط معينة للطلبات بحي يحتوي على خصائص معينة
         special_recommendation_patterns = [
             r'اقترح (?:لي|علي) حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
             r'أقترح (?:لي|علي) حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
             r'أريد حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
             r'اريد حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
-            r'ابحث عن حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)'
+            r'ابحث عن حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
+            r'دلني على حي (?:فيه|فيها|به|بها|قريب من|قريب) ([\u0600-\u06FF\s]+)',
+            r'دلني على حي (?:في|قريب من|قريب|من) (?:منطقة|جهة|اتجاه) ([\u0600-\u06FF\s]+)',
+            r'دلني على حي (?:في|قريب من|قريب|من) ([\u0600-\u06FF\s]+?) (?:وفيه|و فيه|و به|وبه) ([\u0600-\u06FF\s]+)'
         ]
         
         for pattern in special_recommendation_patterns:

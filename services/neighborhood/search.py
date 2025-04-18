@@ -127,6 +127,16 @@ class FacilitySearchService:
             str: نتيجة البحث منسقة
         """
         try:
+            # التحقق من محتوى البحث إذا كان طلب توصية بحي
+            if ("دلني على حي" in search_query or "اقترح لي حي" in search_query or "أقترح لي حي" in search_query) and (
+                "فيه مدارس" in search_query or "به مدارس" in search_query or "فيها مدارس" in search_query or 
+                "يوجد فيه مدارس" in search_query or "توجد فيه مدارس" in search_query or
+                "قريب من" in search_query or "قريبة من" in search_query):
+                
+                # هذه حالة طلب توصية بحي وليس بحث عن مدارس
+                logger.info(f"تم تحديد طلب توصية حي بدلاً من البحث عن المرافق: {search_query}")
+                return "طلب_توصية_حي"
+            
             # التحقق من وجود ملف CSV
             if csv_file not in self.csv_mappings:
                 logger.error(f"ملف CSV غير موجود: {csv_file}")
@@ -656,20 +666,107 @@ class FacilitySearchService:
             logger.warning(f"نوع المرفق غير معروف: {facility_type}")
             return pd.DataFrame()
         
-        # الحصول على بيانات المرفق
+        # الحصول على DataFrame
         df = self.csv_mappings[csv_file_name]
-        if df.empty:
-            logger.warning(f"لا توجد بيانات لنوع المرفق: {facility_type}")
+        
+        # تحديد اسم العمود الذي يحتوي على اسم الحي
+        neighborhood_columns = ["الحي", "اسم_الحي", "neighborhood", "المنطقة", "location"]
+        neighborhood_column = None
+        
+        for col in neighborhood_columns:
+            if col in df.columns:
+                neighborhood_column = col
+                break
+        
+        if not neighborhood_column:
+            logger.warning(f"لم يتم العثور على عمود الحي في {csv_file_name}")
             return pd.DataFrame()
         
         # تنظيف اسم الحي
-        clean_neighborhood = self.clean_neighborhood_name(neighborhood_name)
+        clean_neighborhood = neighborhood_name.replace("حي ", "").strip()
         
-        # البحث في البيانات
-        results = self.search_in_dataframe(df, clean_neighborhood)
+        # البحث عن جميع المرافق في الحي المحدد
+        neighborhood_facilities = df[
+            df[neighborhood_column].str.contains(clean_neighborhood, case=False, na=False) |
+            df[neighborhood_column].str.contains(f"حي {clean_neighborhood}", case=False, na=False)
+        ]
         
-        # تطبيق حد عدد النتائج إذا تم تحديده
-        if limit is not None and not results.empty:
-            results = results.head(limit)
+        # إذا لم يتم العثور على مرافق، حاول البحث باستخدام نص عربي موحد
+        if neighborhood_facilities.empty:
+            normalized_name = self._normalize_arabic_text(clean_neighborhood)
+            neighborhood_facilities = df[
+                df[neighborhood_column].apply(
+                    lambda x: self._normalize_arabic_text(str(x)).find(normalized_name) >= 0 
+                    if pd.notna(x) else False
+                )
+            ]
         
-        return results
+        # تطبيق حد على عدد النتائج إذا كان محددًا
+        if limit and not neighborhood_facilities.empty:
+            return neighborhood_facilities.head(limit)
+            
+        return neighborhood_facilities
+
+    def _extract_facility_from_question(self, message: str) -> Optional[Dict[str, str]]:
+        """
+        استخراج اسم المرفق من سؤال "أين يوجد" أو "أين تقع".
+        
+        Args:
+            message: رسالة المستخدم
+            
+        Returns:
+            Optional[Dict[str, str]]: قاموس يحتوي على اسم ونوع المرفق، أو None إذا لم يُعثر على مرفق
+        """
+        if not message:
+            return None
+            
+        # التحقق مما إذا كانت الرسالة طلب توصية حي
+        neighborhood_patterns = [
+            "دلني على حي", "أريد حي", "اريد حي", "اقترح لي حي", "أقترح لي حي",
+            "ابحث عن حي", "حي فيه", "حي قريب من"
+        ]
+        
+        if any(pattern in message for pattern in neighborhood_patterns):
+            logger.info(f"تم تحديد طلب توصية حي: {message}")
+            return None
+            
+        # البحث عن أنماط سؤال عن موقع مرفق
+        facility_patterns = [
+            r'أين (?:يوجد|توجد) ([\u0600-\u06FF\s]+?)(?:\?|$|\s)',
+            r'أين (?:يقع|تقع) ([\u0600-\u06FF\s]+?)(?:\?|$|\s)',
+            r'(?:موقع|مكان) ([\u0600-\u06FF\s]+?)(?:\?|$|\s)',
+            r'كيف (?:أصل|اصل) (?:إلى|الى) ([\u0600-\u06FF\s]+?)(?:\?|$|\s)',
+            r'(?:دلني|دلوني) (?:على|عن|الى|إلى) ([\u0600-\u06FF\s]+?)(?:\?|$|\s)'
+        ]
+        
+        for pattern in facility_patterns:
+            match = re.search(pattern, message)
+            if match:
+                facility_name = match.group(1).strip()
+                
+                # تحديد نوع المرفق من اسمه
+                facility_type = self._determine_facility_type(facility_name)
+                
+                if facility_type:
+                    logger.info(f"تم استخراج اسم المرفق: {facility_name} (النوع: {facility_type})")
+                    return {
+                        'name': facility_name,
+                        'type': facility_type
+                    }
+        
+        return None
+
+    def _determine_facility_type(self, facility_name: str) -> Optional[str]:
+        """
+        تحديد نوع المرفق بناءً على اسمه.
+        
+        Args:
+            facility_name: اسم المرفق
+            
+        Returns:
+            Optional[str]: نوع المرفق إذا تم العثور عليه، إلا None
+        """
+        for facility_type, keywords in self.facility_keywords.items():
+            if any(keyword in facility_name.lower() for keyword in keywords):
+                return facility_type
+        return None
