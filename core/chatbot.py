@@ -284,14 +284,21 @@ class NeighborhoodChatbot:
                 self.add_to_history(user_id, original_message, best_worst_response)
                 return best_worst_response
             
+            # معالجة استفسارات الميزانية مثل "ابحث عن حي مناسب لميزانيتي حيث ان راتبي ١٥٠٠٠"
+            budget_response = self._handle_budget_query(cleaned_message)
+            if budget_response:
+                self.add_to_history(user_id, original_message, budget_response)
+                return budget_response
+            
             # معالجة أنماط الطلبات مثل "دلني على حي قريب من منطقة الشمال وفيه مدارس"
             neighborhood_direction_patterns = [
                 r'دلني على حي ([\u0600-\u06FF\s]+?) وفيه ([\u0600-\u06FF\s]+)',
                 r'دلني على حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
+                r'دلني على حي قريب من ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
                 r'ارشدني إلى حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
                 r'أرشدني إلى حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'اقترح لي حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'أقترح لي حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
+                r'اقترح لي حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+                r'أقترح لي حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
             ]
             
             for pattern in neighborhood_direction_patterns:
@@ -322,17 +329,17 @@ class NeighborhoodChatbot:
                     recommended_neighborhood = self.recommendation_service.get_recommended_neighborhood(cleaned_message)
                     
                     if recommended_neighborhood:
-                        # بناء رد مفصل حول الحي الموصى به والمرافق المتوفرة فيه
-                        response = f"أقترح عليك حي {recommended_neighborhood}. "
+                        # بناء رد مفصل حول الحي الموصى به باستخدام طريقة الرد التفصيلي
+                        response = self._build_detailed_neighborhood_response(recommended_neighborhood)
                         
                         # إضافة معلومات حول المرافق المطلوبة إذا كانت محددة
                         if facility_type:
                             facility_info = self.search_service.find_facilities_in_neighborhood(recommended_neighborhood, facility_type)
                             summarized_facilities = self._summarize_facilities(facility_info, recommended_neighborhood, facility_type)
-                            response += summarized_facilities
-                        else:
-                            # معلومات عامة عن الحي
-                            response += self.formatter.format_neighborhood_response(recommended_neighborhood)
+                            
+                            # إضافة فاصل بين المعلومات العامة ومعلومات المرافق
+                            if "لم نتمكن من العثور" not in summarized_facilities:
+                                response += f"\n\n{summarized_facilities}"
                         
                         self.add_to_history(user_id, original_message, response)
                         return response
@@ -346,10 +353,19 @@ class NeighborhoodChatbot:
                 # الحصول على توصية بحي
                 recommended_neighborhood = self.recommendation_service.get_recommended_neighborhood(cleaned_message)
                 
-                # تكوين رد حول الحي الموصى به
-                response = f"أقترح عليك حي {recommended_neighborhood}. "
-                response += self.formatter.format_neighborhood_response(recommended_neighborhood)
+                # تكوين رد تفصيلي حول الحي الموصى به باستخدام طريقة الرد المفصلة
+                response = self._build_detailed_neighborhood_response(recommended_neighborhood)
                 
+                # إضافة معلومات المرافق إذا كان هناك نوع مرفق محدد في الاستعلام
+                if 'facility_type' in query_analysis['entities']:
+                    facility_type = query_analysis['entities']['facility_type']
+                    facility_info = self.search_service.find_facilities_in_neighborhood(recommended_neighborhood, facility_type)
+                    summarized_facilities = self._summarize_facilities(facility_info, recommended_neighborhood, facility_type)
+                    
+                    # إضافة معلومات المرافق إذا وجدت
+                    if "لم نتمكن من العثور" not in summarized_facilities:
+                        response += f"\n\n{summarized_facilities}"
+                    
                 # إضافة معلومات المسافة إذا كانت متوفرة
                 if user_latitude and user_longitude:
                     distance = self._calculate_distance_to_neighborhood(recommended_neighborhood, user_latitude, user_longitude)
@@ -387,6 +403,35 @@ class NeighborhoodChatbot:
             
             # التعامل مع طلبات البحث عن موقع مرفق معين
             elif query_analysis['query_type'] == 'facility_location' and 'facility_name' in query_analysis['entities']:
+                facility_name = query_analysis['entities']['facility_name']
+                facility_type = query_analysis['entities'].get('facility_type')
+                
+                # تحديد ملف CSV الذي يجب البحث فيه
+                csv_file = None
+                if facility_type == 'مدرسة':
+                    csv_file = "المدارس.csv"
+                elif facility_type == 'مستشفى':
+                    csv_file = "مستشفى.csv"
+                elif facility_type == 'حديقة':
+                    csv_file = "حدائق.csv"
+                elif facility_type == 'سوبرماركت':
+                    csv_file = "سوبرماركت.csv"
+                elif facility_type == 'مول':
+                    csv_file = "مول.csv"
+                
+                # البحث عن المرفق
+                if csv_file:
+                    search_result = self.search_service.search_entity(csv_file, facility_name)
+                    self.add_to_history(user_id, original_message, search_result)
+                    return search_result
+                else:
+                    # البحث في جميع المرافق إذا لم يتم تحديد نوع
+                    search_result = self.search_service.search_all_facilities(facility_name)
+                    self.add_to_history(user_id, original_message, search_result)
+                    return search_result
+            
+            # التعامل مع طلبات البحث عن مرفق
+            elif query_analysis['query_type'] == 'facility_search' and 'facility_name' in query_analysis['entities']:
                 facility_name = query_analysis['entities']['facility_name']
                 facility_type = query_analysis['entities'].get('facility_type')
                 
@@ -769,78 +814,232 @@ class NeighborhoodChatbot:
 
     def _build_detailed_neighborhood_response(self, neighborhood_name: str) -> str:
         """
-        بناء استجابة مفصلة للحي تتضمن المرافق والمزايا
+        بناء رد مفصل وشامل حول حي معين يشمل جميع المعلومات المهمة.
         
         Args:
             neighborhood_name: اسم الحي
             
         Returns:
-            str: الاستجابة المفصلة
+            str: رد مفصل عن الحي
         """
-        # البحث عن المرافق في الحي
-        facilities_info = self.search_service.find_facilities_in_neighborhood(neighborhood_name, None)
-        
-        # دمج المعلومات مع بعض التفاصيل الإضافية
-        extra_info = f"إليك المزيد من المعلومات عن {neighborhood_name}:\n\n"
-        
-        # إضافة معلومات المزايا من قاعدة البيانات
-        benefits = self.data_loader.get_neighborhood_benefits(neighborhood_name)
-        if benefits and len(benefits) > 0:
-            extra_info += "تجارب السكان السابقين:\n"
-            for i, benefit in enumerate(benefits[:3], 1):  # أخذ أول 3 مزايا فقط
-                extra_info += f"{i}. {benefit}\n"
-            extra_info += "\n"
-        
-        # إضافة معلومات المرافق
-        if "لم يتم العثور" not in facilities_info:
-            extra_info += facilities_info
-        else:
-            extra_info += "المرافق المتوفرة في الحي:\n"
+        try:
+            # الحصول على معلومات الحي
+            neighborhood_info = self.data_loader.find_neighborhood_info(neighborhood_name)
+            if not neighborhood_info:
+                return f"عذراً، لم أتمكن من العثور على معلومات مفصلة عن {neighborhood_name}."
             
-            # البحث عن المرافق المختلفة بشكل منفصل
-            for facility_type in ["مدرسة", "مستشفى", "حديقة", "سوبرماركت", "مول"]:
+            # تنظيف اسم الحي
+            clean_name = neighborhood_name.replace("حي ", "").strip()
+            formatted_name = f"حي {clean_name}" if not neighborhood_name.startswith("حي") else neighborhood_name
+            
+            # بداية الرد بالتوصية
+            response = f"أقترح عليك {formatted_name}. "
+            
+            # إضافة معلومات عن تجارب الباحثين السابقين إذا توفرت
+            if "based_on_experience" in neighborhood_info and neighborhood_info["based_on_experience"]:
+                response += "بناءً على تجربة الباحثين عن العقارات السابقين، أقترح عليك البحث في "
+                response += f"{formatted_name}. "
+            
+            # معلومات عن موقع الحي والخصائص العامة
+            if "الموقع" in neighborhood_info and neighborhood_info["الموقع"]:
+                response += f"يعتبر {formatted_name} من الأحياء "
+                if "قديم" in neighborhood_info["الموقع"].lower():
+                    response += "القديمة والشهيرة "
+                elif "جديد" in neighborhood_info["الموقع"].lower():
+                    response += "الحديثة والمتطورة "
+                else:
+                    response += "المعروفة "
+                
+                if "شمال" in neighborhood_info["الموقع"].lower():
+                    response += f"في شمال مدينة الرياض"
+                elif "جنوب" in neighborhood_info["الموقع"].lower():
+                    response += f"في جنوب مدينة الرياض"
+                elif "شرق" in neighborhood_info["الموقع"].lower():
+                    response += f"في شرق مدينة الرياض"
+                elif "غرب" in neighborhood_info["الموقع"].lower():
+                    response += f"في غرب مدينة الرياض"
+                elif "وسط" in neighborhood_info["الموقع"].lower() or "المركز" in neighborhood_info["الموقع"].lower():
+                    response += f"في وسط مدينة الرياض"
+                else:
+                    # استخدام النص كما هو
+                    response += f"في {neighborhood_info['الموقع']}"
+                
+                # إضافة معلومات عن البلدية
+                if "البلدية" in neighborhood_info and neighborhood_info["البلدية"]:
+                    response += f"، وهو من الأحياء التابعة لبلدية {neighborhood_info['البلدية']}"
+                
+                response += ".\n"
+            
+            # إضافة معلومات عن المميزات الطبيعية والإنشائية
+            natural_features = []
+            if "المعالم_البارزة" in neighborhood_info and neighborhood_info["المعالم_البارزة"]:
+                natural_features.append(neighborhood_info["المعالم_البارزة"])
+            
+            if "المميزات_الطبيعية" in neighborhood_info and neighborhood_info["المميزات_الطبيعية"]:
+                natural_features.append(neighborhood_info["المميزات_الطبيعية"])
+            
+            if natural_features:
+                response += f"حيث يعد من الأحياء التي شهدت تطوراً وازدهاراً في السنوات الأخيرة"
+                
+                # إضافة المميزات الطبيعية
+                for feature in natural_features:
+                    if "وادي" in feature.lower():
+                        response += f"، واشتهر {formatted_name} بوجود {feature} الذي يتمتع بمناظر رائعة وخلابة، والذي يتهافت عليه الزوار بشكل يومي لممارسة مختلف الرياضات فيه كرياضة المشي ورياضة ركوب الدراجات وأيضاً للجلوس والاستمتاع بمنظر البحيرة"
+                    else:
+                        response += f"، ويتميز بوجود {feature}"
+                
+                response += ".\n"
+            
+            # إضافة معلومات عن طرق الوصول وسهولة التنقل
+            if "الطرق_الرئيسية" in neighborhood_info and neighborhood_info["الطرق_الرئيسية"]:
+                response += f"ويمتاز {formatted_name} بسهولة مخارجه ومداخله من الدائري "
+                
+                if "شمال" in neighborhood_info["الطرق_الرئيسية"].lower():
+                    response += "الشمالي "
+                elif "جنوب" in neighborhood_info["الطرق_الرئيسية"].lower():
+                    response += "الجنوبي "
+                elif "شرق" in neighborhood_info["الطرق_الرئيسية"].lower():
+                    response += "الشرقي "
+                elif "غرب" in neighborhood_info["الطرق_الرئيسية"].lower():
+                    response += "الغربي "
+                else:
+                    response += ""
+                
+                roads = neighborhood_info["الطرق_الرئيسية"].split(',')
+                if len(roads) > 1:
+                    formatted_roads = " و".join([", ".join(roads[:-1]), roads[-1].strip()])
+                    response += f"ومن طريق {formatted_roads} "
+                else:
+                    response += f"ومن طريق {neighborhood_info['الطرق_الرئيسية']} "
+                
+                response += "ويتوفر فيه جميع الخدمات.\n"
+            
+            # إضافة معلومات عن المرافق والخدمات
+            response += f"يتوفر في {formatted_name} العديد من المرافق والخدمات"
+            
+            # الاستعلام عن أهم المرافق
+            facility_types = ["مدرسة", "مستشفى", "حديقة", "سوبرماركت", "مول"]
+            has_facility_details = False
+            
+            for facility_type in facility_types:
                 facility_info = self.search_service.find_facilities_in_neighborhood(neighborhood_name, facility_type)
                 if "لم يتم العثور" not in facility_info:
-                    extra_info += f"\n{facility_info}\n"
-        
-        # إضافة معلومات عن الأسعار إذا كانت متاحة
-        neighborhood_info = self.data_loader.find_neighborhood_info(neighborhood_name)
-        if neighborhood_info:
-            price_info = []
+                    has_facility_details = True
+                    break
             
-            # البحث عن معلومات الأسعار - تحديث أسماء الحقول لتتوافق مع البيانات الفعلية
-            price_fields = [
-                {"key": "price_of_meter_Apartment", "label": "سعر المتر للشقق"},
-                {"key": "price_of_meter_Villas", "label": "سعر المتر للفلل"},
-                {"key": "average_rent", "label": "متوسط الإيجار"},
-                {"key": "price_of_meter_Commercial", "label": "سعر المتر التجاري"},
-                # أسماء بديلة بالعربية
-                {"key": "سعر_المتر_للشقق", "label": "سعر المتر للشقق"},
-                {"key": "سعر_المتر_للفلل", "label": "سعر المتر للفلل"},
-                {"key": "متوسط_الإيجار", "label": "متوسط الإيجار"},
-                {"key": "سعر_المتر_التجاري", "label": "سعر المتر التجاري"}
-            ]
+            if not has_facility_details:
+                response += "."
+            else:
+                response += " مثل المدارس، المستشفيات، الحدائق، والمراكز التجارية."
             
-            for field in price_fields:
-                key = field["key"]
-                if key in neighborhood_info and neighborhood_info[key]:
-                    price_value = neighborhood_info[key]
-                    
-                    # تنسيق السعر
-                    if isinstance(price_value, (int, float)):
-                        formatted_price = "{:,}".format(int(price_value))
-                        price_info.append(f"{field['label']}: {formatted_price} ريال")
-                    else:
-                        price_info.append(f"{field['label']}: {price_value}")
+            # إضافة معلومات الأسعار
+            if "متوسط_سعر_المتر" in neighborhood_info and neighborhood_info["متوسط_سعر_المتر"]:
+                response += "\n"
+                
+                # تحويل النص إلى رقم إذا أمكن
+                try:
+                    meter_price = float(neighborhood_info["متوسط_سعر_المتر"])
+                    # تنسيق السعر بفواصل الآلاف
+                    formatted_price = "{:,.0f}".format(meter_price)
+                    response += f"سعر المتر للفلل {formatted_price} ريال"
+                except:
+                    response += f"سعر المتر للفلل {neighborhood_info['متوسط_سعر_المتر']} ريال"
             
-            if price_info:
-                extra_info += "\nمعلومات الأسعار في الحي:\n"
-                for info in price_info:
-                    extra_info += f"• {info}\n"
-        
-        extra_info += "\nيمكنك السؤال عن تفاصيل أكثر مثل 'أين توجد مدارس في الحي' أو 'معلومات عن مستشفيات الحي'"
-        
-        return extra_info
+            if "متوسط_سعر_المتر_شقق" in neighborhood_info and neighborhood_info["متوسط_سعر_المتر_شقق"]:
+                if "متوسط_سعر_المتر" in neighborhood_info and neighborhood_info["متوسط_سعر_المتر"]:
+                    response += "، "
+                else:
+                    response += "\n"
+                
+                # تحويل النص إلى رقم إذا أمكن
+                try:
+                    meter_price_apt = float(neighborhood_info["متوسط_سعر_المتر_شقق"])
+                    # تنسيق السعر بفواصل الآلاف
+                    formatted_price_apt = "{:,.0f}".format(meter_price_apt)
+                    response += f"سعر المتر للشقق {formatted_price_apt} ريال"
+                except:
+                    response += f"سعر المتر للشقق {neighborhood_info['متوسط_سعر_المتر_شقق']} ريال"
+            
+            if ("متوسط_سعر_المتر" in neighborhood_info and neighborhood_info["متوسط_سعر_المتر"]) or \
+               ("متوسط_سعر_المتر_شقق" in neighborhood_info and neighborhood_info["متوسط_سعر_المتر_شقق"]):
+                response += "."
+            
+            # إضافة مميزات الحي
+            response += "\nويتميز الحي بـ: "
+            
+            benefits = []
+            if "نوع_الحي" in neighborhood_info and neighborhood_info["نوع_الحي"]:
+                if "سكني" in neighborhood_info["نوع_الحي"].lower():
+                    benefits.append("حي سكني هادئ")
+                elif "تجاري" in neighborhood_info["نوع_الحي"].lower():
+                    benefits.append("منطقة تجارية نشطة")
+                elif "مختلط" in neighborhood_info["نوع_الحي"].lower():
+                    benefits.append("منطقة مختلطة (سكنية وتجارية)")
+            
+            if "المساحة" in neighborhood_info and neighborhood_info["المساحة"]:
+                benefits.append("المساحة مناسبة")
+            
+            if "مستوى_الخدمات" in neighborhood_info and neighborhood_info["مستوى_الخدمات"]:
+                quality = neighborhood_info["مستوى_الخدمات"]
+                if isinstance(quality, str):
+                    if any(word in quality.lower() for word in ["ممتاز", "عالي", "جيد", "متميز"]):
+                        benefits.append("وجود خدمات جيدة")
+                    elif "متوسط" in quality.lower():
+                        benefits.append("وجود خدمات متوسطة")
+                
+            if "مستوى_الأمان" in neighborhood_info and neighborhood_info["مستوى_الأمان"]:
+                if "عالي" in neighborhood_info["مستوى_الأمان"].lower() or "جيد" in neighborhood_info["مستوى_الأمان"].lower():
+                    benefits.append("مستوى أمان جيد")
+            
+            # إضافة معلومات عن حداثة الحي
+            if "سنة_التأسيس" in neighborhood_info and neighborhood_info["سنة_التأسيس"]:
+                try:
+                    year = int(neighborhood_info["سنة_التأسيس"])
+                    current_year = datetime.datetime.now().year
+                    if current_year - year < 10:
+                        benefits.append("الحي حديث")
+                except:
+                    # إذا كان هناك مشكلة في تحويل السنة إلى رقم، نتحقق من نص الحقل
+                    if "جديد" in neighborhood_info["سنة_التأسيس"].lower() or "حديث" in neighborhood_info["سنة_التأسيس"].lower():
+                        benefits.append("الحي حديث")
+            
+            if "مميزات" in neighborhood_info and neighborhood_info["مميزات"]:
+                if isinstance(neighborhood_info["مميزات"], list):
+                    for benefit in neighborhood_info["مميزات"]:
+                        benefits.append(benefit)
+                elif isinstance(neighborhood_info["مميزات"], str):
+                    benefits_list = neighborhood_info["مميزات"].split("،")
+                    for benefit in benefits_list:
+                        benefits.append(benefit.strip())
+            
+            # إضافة معلومات عن مناسبة السعر
+            if "مستوى_الأسعار" in neighborhood_info and neighborhood_info["مستوى_الأسعار"]:
+                price_level = neighborhood_info["مستوى_الأسعار"]
+                if "منخفض" in price_level.lower() or "متوسط" in price_level.lower() or "معقول" in price_level.lower():
+                    benefits.append("السعر مناسب")
+                elif "مرتفع" in price_level.lower():
+                    benefits.append("منطقة راقية")
+            
+            # إضافة المميزات المتوفرة
+            if benefits:
+                if len(benefits) == 1:
+                    response += benefits[0]
+                else:
+                    formatted_benefits = "، ".join(benefits)
+                    response += formatted_benefits
+            else:
+                response += "موقع جيد، سهولة الوصول، وتوفر الخدمات"
+            
+            response += "."
+            
+            # إضافة جملة ختامية للمزيد من المعلومات
+            response += f" للمزيد من المعلومات عن {formatted_name}، يمكنك الاستفسار عن أي جانب محدد ترغب في معرفته."
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"خطأ في بناء رد مفصل عن الحي: {str(e)}")
+            return f"أقترح عليك حي {neighborhood_name}. للحصول على مزيد من المعلومات التفصيلية، يمكنك سؤالي عن جانب محدد من جوانب هذا الحي."
 
     def _handle_housing_with_facilities(self, query_analysis: Dict, user_message: str, user_latitude: float = None, user_longitude: float = None) -> str:
         """
@@ -1400,6 +1599,114 @@ class NeighborhoodChatbot:
       حفظ بيانات استبيان "Help Us" في قاعدة البيانات.
       """
       self.db['Knowledge_base'].insert_one(data)
+
+    def _handle_budget_query(self, message: str) -> Optional[str]:
+        """
+        معالجة الاستفسارات المتعلقة بالميزانية واقتراح حي مناسب.
+        
+        Args:
+            message: رسالة المستخدم
+            
+        Returns:
+            Optional[str]: رد منسق أو None إذا لم تكن الرسالة متعلقة بالميزانية
+        """
+        # أنماط لاستخراج الميزانية أو الراتب
+        budget_patterns = [
+            r'ابحث عن حي مناسب لميزانيتي حيث ان راتبي (\d+[,\d]*)',
+            r'حي مناسب لراتب (\d+[,\d]*)',
+            r'حي يناسب ميزانية (\d+[,\d]*)',
+            r'ابحث عن حي يناسب راتب (\d+[,\d]*)',
+            r'اقترح حي لراتب (\d+[,\d]*)',
+            r'راتبي (\d+[,\d]*)',
+            r'دخلي (\d+[,\d]*) ريال',
+            r'ميزانيتي (\d+[,\d]*)'
+        ]
+        
+        for pattern in budget_patterns:
+            match = re.search(pattern, message)
+            if match:
+                # استخراج قيمة الميزانية/الراتب
+                budget_str = match.group(1).replace(',', '')
+                try:
+                    budget = int(budget_str)
+                    logger.info(f"تم العثور على استفسار ميزانية بقيمة: {budget}")
+                    
+                    # تحديد فئة الدخل
+                    income_category = None
+                    if budget < 5000:
+                        income_category = "منخفض"
+                    elif budget < 10000:
+                        income_category = "منخفض إلى متوسط"
+                    elif budget < 15000:
+                        income_category = "متوسط"
+                    elif budget < 25000:
+                        income_category = "متوسط إلى مرتفع"
+                    else:
+                        income_category = "مرتفع"
+                    
+                    # تحديد الحي المناسب بناءً على فئة الدخل
+                    recommended_neighborhoods = []
+                    all_neighborhoods = self.data_loader.get_available_neighborhoods()
+                    
+                    for neighborhood in all_neighborhoods:
+                        neighborhood_info = self.data_loader.find_neighborhood_info(neighborhood)
+                        if not neighborhood_info:
+                            continue
+                            
+                        # البحث عن معلومات مستوى الأسعار
+                        if "مستوى_الأسعار" in neighborhood_info:
+                            price_level = neighborhood_info["مستوى_الأسعار"]
+                            
+                            if income_category == "منخفض" and "منخفض" in str(price_level).lower():
+                                recommended_neighborhoods.append(neighborhood)
+                            elif income_category == "منخفض إلى متوسط" and ("منخفض" in str(price_level).lower() or "متوسط" in str(price_level).lower()):
+                                recommended_neighborhoods.append(neighborhood)
+                            elif income_category == "متوسط" and "متوسط" in str(price_level).lower():
+                                recommended_neighborhoods.append(neighborhood)
+                            elif income_category == "متوسط إلى مرتفع" and ("متوسط" in str(price_level).lower() or "مرتفع" in str(price_level).lower()):
+                                recommended_neighborhoods.append(neighborhood)
+                            elif income_category == "مرتفع" and "مرتفع" in str(price_level).lower():
+                                recommended_neighborhoods.append(neighborhood)
+                    
+                    # إذا لم يتم العثور على أحياء مناسبة، اقترح بعض الأحياء العامة
+                    if not recommended_neighborhoods and all_neighborhoods:
+                        # اختيار بعض الأحياء العشوائية كتوصيات
+                        import random
+                        sample_size = min(3, len(all_neighborhoods))
+                        recommended_neighborhoods = random.sample(all_neighborhoods, sample_size)
+                    
+                    if recommended_neighborhoods:
+                        # اختيار حي واحد كتوصية رئيسية
+                        main_recommendation = recommended_neighborhoods[0]
+                        
+                        # بناء رد مفصل
+                        response = self._build_detailed_neighborhood_response(main_recommendation)
+                        
+                        # إضافة تفاصيل عن التكلفة المقدرة للسكن
+                        monthly_rent = 0
+                        if budget < 10000:
+                            monthly_rent = budget * 0.3  # 30% من الدخل للسكن للدخل المنخفض
+                        else:
+                            monthly_rent = budget * 0.25  # 25% من الدخل للسكن للدخل المتوسط والمرتفع
+                        
+                        formatted_rent = "{:,.0f}".format(monthly_rent)
+                        response += f"\n\nبناءً على راتبك البالغ {'{:,.0f}'.format(budget)} ريال، يمكنك تخصيص حوالي {formatted_rent} ريال شهرياً للسكن، وهو ما يتناسب مع أسعار العقارات في {main_recommendation}."
+                        
+                        # إضافة توصيات بديلة إذا وجدت
+                        if len(recommended_neighborhoods) > 1:
+                            alternative_recommendations = recommended_neighborhoods[1:3]  # أقصى 2 أحياء بديلة
+                            formatted_alternatives = "، ".join(alternative_recommendations)
+                            response += f" يمكنك أيضاً النظر في أحياء بديلة مثل {formatted_alternatives} التي تتناسب مع ميزانيتك."
+                        
+                        return response
+                    else:
+                        return "عذراً، لم أتمكن من العثور على أحياء محددة تتناسب مع ميزانيتك. يرجى تزويدي بمزيد من المعلومات عن احتياجاتك السكنية، مثل المنطقة المفضلة أو المرافق المطلوبة، لمساعدتك بشكل أفضل."
+                    
+                except ValueError:
+                    # إذا كان هناك خطأ في تحويل النص إلى رقم
+                    logger.warning(f"خطأ في استخراج الميزانية: {budget_str}")
+        
+        return None
 
 
     
