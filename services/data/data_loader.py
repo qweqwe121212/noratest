@@ -181,42 +181,34 @@ class DataLoader:
     
     def _set_available_neighborhoods(self) -> None:
         """
-        تعيين الأحياء المتاحة من قاعدة المعرفة أو القائمة الافتراضية.
+        تجميع قائمة الأحياء المتاحة من مجموعة الأحياء وقاعدة المعرفة.
+        تضمن هذه الخطوة تجميع الأحياء من المصادر المختلفة وإزالة التكرار.
         """
-        neighborhoods_from_csv = []
-        
-        # محاولة الحصول على الأحياء من ملف CSV
-        if not self.neighborhoods.empty and hasattr(self, 'neighborhood_name_column') and self.neighborhood_name_column:
-            if self.neighborhood_name_column in self.neighborhoods.columns:
-                neighborhoods_from_csv = self.neighborhoods[self.neighborhood_name_column].dropna().tolist()
-                logger.info(f"تم تحميل {len(neighborhoods_from_csv)} حي من ملف CSV")
-        
-        # محاولة الحصول على الأحياء من قاعدة المعرفة
-        neighborhoods_from_kb = []
-        if (hasattr(self, 'neighborhood_column') and self.neighborhood_column and 
-            not self.knowledge_base.empty and self.neighborhood_column in self.knowledge_base.columns):
-            neighborhoods_from_kb = self.knowledge_base[self.neighborhood_column].dropna().unique().tolist()
-            logger.info(f"تم تحميل {len(neighborhoods_from_kb)} حي من قاعدة المعرفة")
-        
-        # دمج جميع مصادر الأحياء وإزالة التكرارات
-        all_neighborhoods = neighborhoods_from_csv + neighborhoods_from_kb + self.default_neighborhoods
-        unique_neighborhoods = []
-        
-        # تنظيف أسماء الأحياء وإزالة التكرارات
-        for neighborhood in all_neighborhoods:
-            if not neighborhood or not isinstance(neighborhood, str):
-                continue
-                
-            clean_name = neighborhood.strip()
-            if clean_name and clean_name not in unique_neighborhoods:
-                unique_neighborhoods.append(clean_name)
-        
-        if unique_neighborhoods:
-            self.available_neighborhoods = unique_neighborhoods
-            logger.info(f"تم تعيين {len(self.available_neighborhoods)} حي متاح")
-        else:
-            self.available_neighborhoods = self.default_neighborhoods
-            logger.warning("لم يتم العثور على أحياء في البيانات، استخدام القائمة الافتراضية")
+        try:
+            self.available_neighborhoods = []
+            
+            # جمع الأحياء من قاعدة المعرفة
+            if not self.knowledge_base.empty and 'category' in self.knowledge_base.columns and 'neighborhood' in self.knowledge_base.columns:
+                kb_neighborhoods = self.knowledge_base[self.knowledge_base['category'] == 'الأحياء']['neighborhood'].tolist()
+                kb_neighborhoods = [n for n in kb_neighborhoods if isinstance(n, str) and n.strip()]
+                self.available_neighborhoods.extend(kb_neighborhoods)
+            
+            # جمع الأحياء من مجموعة الأحياء
+            if not self.neighborhoods.empty and hasattr(self, 'neighborhood_name_column') and self.neighborhood_name_column in self.neighborhoods.columns:
+                collection_neighborhoods = self.neighborhoods[self.neighborhood_name_column].tolist()
+                collection_neighborhoods = [n for n in collection_neighborhoods if isinstance(n, str) and n.strip()]
+                self.available_neighborhoods.extend(collection_neighborhoods)
+            
+            # إزالة التكرار وتنظيف القائمة
+            self.available_neighborhoods = list(set(self.available_neighborhoods))
+            self.available_neighborhoods = [n.replace("حي ", "").strip() for n in self.available_neighborhoods]
+            self.available_neighborhoods = [n for n in self.available_neighborhoods if n]
+            
+            logger.info(f"تم تجميع {len(self.available_neighborhoods)} حي من مجموعة الأحياء وقاعدة المعرفة")
+            
+        except Exception as e:
+            logger.error(f"خطأ في تجميع قائمة الأحياء: {str(e)}")
+            self.available_neighborhoods = []
     
     def _process_neighborhood_benefits(self) -> None:
         """
@@ -282,7 +274,7 @@ class DataLoader:
     
     def find_neighborhood_info(self, neighborhood_name: str) -> Dict:
         """
-        البحث عن معلومات الحي في ملف الأحياء.
+        البحث عن معلومات الحي في مجموعة الأحياء.
         
         Args:
             neighborhood_name: اسم الحي
@@ -318,7 +310,7 @@ class DataLoader:
                 if not partial_matches.empty:
                     return partial_matches.iloc[0].to_dict()
             
-            logger.warning(f"الحي '{neighborhood_name}' غير موجود في ملف CSV")
+            logger.warning(f"الحي '{neighborhood_name}' غير موجود في مجموعة الأحياء")
             return {}
             
         except Exception as e:

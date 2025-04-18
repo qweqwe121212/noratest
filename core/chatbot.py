@@ -6,6 +6,7 @@ import logging
 import datetime
 from typing import Dict, List, Optional, Any
 import re
+import pandas as pd
 
 from utils.location_integration import LocationIntegration
 from services.data.data_loader import DataLoader
