@@ -251,201 +251,207 @@ class NeighborhoodChatbot:
 
     def process_message(self, user_id: str, user_message: str, user_latitude: float = None, user_longitude: float = None) -> str:
         """
-        معالجة رسالة المستخدم والرد عليها.
+        معالجة رسالة المستخدم وإرجاع الرد المناسب.
         
         Args:
             user_id: معرف المستخدم
             user_message: رسالة المستخدم
-            user_latitude: إحداثي خط العرض للمستخدم (اختياري)
-            user_longitude: إحداثي خط الطول للمستخدم (اختياري)
+            user_latitude: خط العرض للمستخدم (اختياري)
+            user_longitude: خط الطول للمستخدم (اختياري)
             
         Returns:
-            str: رد الشاتبوت
+            str: الرد المناسب
         """
-        if not user_message:
-            return "يرجى إدخال رسالة."
-        
-        # الاحتفاظ بالرسالة الأصلية
-        original_message = user_message
-        
         try:
+            # التحقق من أن الرسالة نصية
+            if not user_message or not isinstance(user_message, str):
+                response = "كيف يمكنني مساعدتك في البحث عن عقار أو حي مناسب أو المرافق المتوفرة؟"
+                self.add_to_history(user_id, "", response)
+                return response
+            
             # تنظيف الرسالة
             cleaned_message = user_message.strip()
-            
-            # التحقق من الأسئلة الموجهة التي تتطلب ردودًا سريعة
-            short_response = self._handle_short_response(user_id, cleaned_message)
-            if short_response:
-                self.add_to_history(user_id, original_message, short_response)
-                return short_response
+            if not cleaned_message:
+                response = "كيف يمكنني مساعدتك في البحث عن عقار أو حي مناسب أو المرافق المتوفرة؟"
+                self.add_to_history(user_id, cleaned_message, response)
+                return response
                 
-            # التحقق من استفسارات "أفضل حي" أو "أسوأ حي"
+            # التحقق مما إذا كان استفسار عن أفضل/أسوأ حي
             best_worst_response = self._handle_best_worst_neighborhood_query(cleaned_message)
             if best_worst_response:
-                self.add_to_history(user_id, original_message, best_worst_response)
+                self.add_to_history(user_id, cleaned_message, best_worst_response)
                 return best_worst_response
             
-            # معالجة أنماط الطلبات مثل "دلني على حي قريب من منطقة الشمال وفيه مدارس"
-            neighborhood_direction_patterns = [
-                r'دلني على حي ([\u0600-\u06FF\s]+?) وفيه ([\u0600-\u06FF\s]+)',
-                r'دلني على حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'ارشدني إلى حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'أرشدني إلى حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'اقترح لي حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-                r'أقترح لي حي ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
-            ]
+            # التحقق من الأحياء المذكورة في الرسالة
+            mentioned_neighborhood = None
+            for neighborhood in self.data_loader.get_available_neighborhoods():
+                if neighborhood in cleaned_message:
+                    mentioned_neighborhood = neighborhood
+                    break
+                    
+            # التحقق مما إذا كان طلب عرض جميع المرافق في حي محدد
+            if mentioned_neighborhood:
+                all_facilities_response = self._handle_show_all_facilities(cleaned_message, mentioned_neighborhood)
+                if all_facilities_response:
+                    self.add_to_history(user_id, cleaned_message, all_facilities_response)
+                    return all_facilities_response
             
-            for pattern in neighborhood_direction_patterns:
-                match = re.search(pattern, cleaned_message)
-                if match:
-                    logger.info(f"تم العثور على طلب توصية بحي بناءً على معايير: {match.group(1)}")
-                    # تحليل معايير الحي المطلوب (مثل "قريب من منطقة الشمال وفيه مدارس")
-                    query_analysis = self.query_processor.analyze_query(cleaned_message)
-                    query_analysis['query_type'] = 'neighborhood_recommendation'
-                    query_analysis['intents'].add('neighborhood_recommendation')
-                    
-                    # تحليل معايير المعلومات المكانية أو المرافق المطلوبة
-                    if 'قريب من' in cleaned_message or 'بالقرب من' in cleaned_message:
-                        query_analysis['entities']['location_preference'] = True
-                    
-                    # استخراج نوع المرفق المطلوب
-                    facility_type = None
-                    for facility_key, keywords in self.search_service.facility_keywords.items():
-                        if any(keyword in cleaned_message for keyword in keywords):
-                            facility_type = facility_key
-                            break
-                    
-                    if facility_type:
-                        # إذا كان هناك مرفق محدد، أضفه للمعايير
-                        query_analysis['entities']['facility_type'] = facility_type
-                    
-                    # الحصول على توصية بحي بناءً على المعايير المحللة
-                    recommended_neighborhood = self.recommendation_service.get_recommended_neighborhood(cleaned_message)
-                    
-                    if recommended_neighborhood:
-                        # بناء رد مفصل حول الحي الموصى به
-                        detailed_response = self._build_comprehensive_neighborhood_response(recommended_neighborhood, query_analysis)
-                        
-                        self.add_to_history(user_id, original_message, detailed_response)
-                        return detailed_response
+            # التحقق مما إذا كانت الرسالة قصيرة (مثل "نعم"، "المزيد"، إلخ)
+            # والتعامل معها باستخدام سياق المحادثة السابقة إذا لزم الأمر
+            short_response_result = self._handle_short_response(user_id, cleaned_message)
+            if short_response_result:
+                return short_response_result
             
             # تحليل الاستعلام باستخدام معالج الاستعلامات
             query_analysis = self.query_processor.analyze_query(cleaned_message)
-            logger.info(f"نتيجة تحليل الاستعلام: {query_analysis}")
+            logger.info(f"تحليل الاستعلام: {query_analysis}")
             
-            # التعامل مع طلبات توصية الأحياء
-            if query_analysis['query_type'] == 'neighborhood_recommendation':
-                # الحصول على توصية بحي
-                recommended_neighborhood = self.recommendation_service.get_recommended_neighborhood(cleaned_message)
-                
-                # تكوين رد مفصل حول الحي الموصى به
-                detailed_response = self._build_comprehensive_neighborhood_response(recommended_neighborhood, query_analysis)
-                
-                self.add_to_history(user_id, original_message, detailed_response)
-                return detailed_response
+            # متغير لتخزين الحي الموصى به إذا وجد
+            recommended_neighborhood = None
             
-            # التعامل مع طلبات معلومات الأحياء
-            elif query_analysis['query_type'] == 'neighborhood_info' and 'neighborhood' in query_analysis['entities']:
-                neighborhood_name = query_analysis['entities']['neighborhood']
-                
-                # بناء رد مفصل حول الحي
-                response = self._build_detailed_neighborhood_response(neighborhood_name)
-                
-                # إضافة معلومات المسافة إذا كانت متوفرة
-                if user_latitude and user_longitude:
-                    distance = self._calculate_distance_to_neighborhood(neighborhood_name, user_latitude, user_longitude)
-                    if distance is not None:
-                        response += f"\n\nالمسافة من موقعك الحالي إلى حي {neighborhood_name} هي {distance:.2f} كيلومتر."
-                
-                self.add_to_history(user_id, original_message, response)
-                return response
-            
-            # التعامل مع طلبات البحث عن السكن
-            elif query_analysis['query_type'] == 'housing_search':
-                logger.info("معالجة طلب البحث عن سكن")
-                
-                # تحليل الرد المناسب
+            # معالجة البحث عن سكن قرب مرافق محددة
+            if query_analysis['query_type'] == 'housing_search' and 'proximity_facilities' in query_analysis['entities']:
                 response = self._handle_housing_with_facilities(query_analysis, cleaned_message, user_latitude, user_longitude)
-                
-                self.add_to_history(user_id, original_message, response)
-                return response
             
-            # التعامل مع طلبات البحث عن موقع مرفق معين
-            elif query_analysis['query_type'] == 'facility_location' and 'facility_name' in query_analysis['entities']:
-                facility_name = query_analysis['entities']['facility_name']
+            # معالجة الاستعلام بناءً على نوعه
+            elif query_analysis['query_type'] == 'neighborhood_info':
+                # طلب معلومات حول حي محدد
+                neighborhood_name = query_analysis['entities'].get('neighborhood')
+                if neighborhood_name:
+                    recommended_neighborhood = neighborhood_name
+                    response = self.formatter.format_neighborhood_response(neighborhood_name)
+            
+            elif query_analysis['query_type'] == 'neighborhood_recommendation':
+                # طلب توصية حي
+                if 'neighborhood' in query_analysis['entities']:
+                    # إذا تم تحديد حي معين في الطلب
+                    recommended_neighborhood = query_analysis['entities']['neighborhood']
+                    response = self.formatter.format_neighborhood_response(recommended_neighborhood)
+                else:
+                    # استخدام محرك التوصيات للحصول على حي مناسب
+                    recommended_neighborhood = self.recommendation_service.get_recommended_neighborhood(cleaned_message)
+                    response = self.formatter.format_neighborhood_response(recommended_neighborhood)
+            
+            elif query_analysis['query_type'] == 'neighborhood_facilities':
+                # طلب معلومات حول مرافق في حي معين
+                neighborhood_name = query_analysis['entities'].get('neighborhood')
                 facility_type = query_analysis['entities'].get('facility_type')
                 
-                # تحديد ملف CSV الذي يجب البحث فيه
-                csv_file = None
-                if facility_type == 'مدرسة':
-                    csv_file = "المدارس.csv"
-                elif facility_type == 'مستشفى':
-                    csv_file = "مستشفى.csv"
-                elif facility_type == 'حديقة':
-                    csv_file = "حدائق.csv"
-                elif facility_type == 'سوبرماركت':
-                    csv_file = "سوبرماركت.csv"
-                elif facility_type == 'مول':
-                    csv_file = "مول.csv"
-                
-                # البحث عن المرفق
-                if csv_file:
-                    search_result = self.search_service.search_entity(csv_file, facility_name)
-                    self.add_to_history(user_id, original_message, search_result)
-                    return search_result
+                if neighborhood_name:
+                    recommended_neighborhood = neighborhood_name
+                    if facility_type:
+                        # إذا تم تحديد نوع المرفق، عرض معلومات مختصرة
+                        facility_info = self.search_service.find_facilities_in_neighborhood(neighborhood_name, facility_type)
+                        response = self._summarize_facilities(facility_info, neighborhood_name, facility_type)
+                    else:
+                        # عرض نظرة عامة عن المرافق
+                        response = f"إليك أبرز المرافق في {neighborhood_name}:\n\n"
+                        
+                        # إضافة 1-2 مرفق من كل نوع
+                        for facility_type in ["مدرسة", "مستشفى", "حديقة", "سوبرماركت", "مول"]:
+                            facility_info = self.search_service.find_facilities_in_neighborhood(neighborhood_name, facility_type)
+                            if "لم يتم العثور" not in facility_info:
+                                # استخراج 1-2 مرفق فقط
+                                summarized = self._extract_sample_facilities(facility_info, 2)
+                                if summarized:
+                                    facility_plural = {
+                                        "مدرسة": "المدارس",
+                                        "مستشفى": "المستشفيات والمراكز الطبية",
+                                        "حديقة": "الحدائق والمتنزهات",
+                                        "سوبرماركت": "محلات السوبرماركت",
+                                        "مول": "المولات ومراكز التسوق"
+                                    }.get(facility_type, facility_type)
+                                    response += f"أبرز {facility_plural}:\n{summarized}\n\n"
+                        
+                        response += "للاطلاع على قائمة كاملة بالمرافق، يمكنك أن تسأل عن نوع محدد مثل 'أين توجد المدارس في هذا الحي؟'"
                 else:
-                    # البحث في جميع المرافق إذا لم يتم تحديد نوع
-                    search_result = self.search_service.search_all_facilities(facility_name)
-                    self.add_to_history(user_id, original_message, search_result)
-                    return search_result
+                    response = "يرجى تحديد الحي الذي تريد معرفة المرافق فيه."
             
-            # طلبات البحث عن مرفق
-            elif query_analysis['query_type'] == 'facility_search' and 'facility_name' in query_analysis['entities']:
-                facility_name = query_analysis['entities']['facility_name']
+            elif query_analysis['query_type'] == 'facility_location':
+                # سؤال عن موقع مرفق محدد
+                facility_name = query_analysis['entities'].get('facility_name')
                 facility_type = query_analysis['entities'].get('facility_type')
                 
-                # تحديد ملف CSV الذي يجب البحث فيه
-                csv_file = None
-                if facility_type == 'مدرسة':
-                    csv_file = "المدارس.csv"
-                elif facility_type == 'مستشفى':
-                    csv_file = "مستشفى.csv"
-                elif facility_type == 'حديقة':
-                    csv_file = "حدائق.csv"
-                elif facility_type == 'سوبرماركت':
-                    csv_file = "سوبرماركت.csv"
-                elif facility_type == 'مول':
-                    csv_file = "مول.csv"
+                if facility_name and facility_type:
+                    # تحديد ملف CSV المناسب
+                    csv_file = None
+                    if facility_type == 'مدرسة':
+                        csv_file = "المدارس.csv"
+                    elif facility_type == 'مستشفى':
+                        csv_file = "مستشفى.csv"
+                    elif facility_type == 'حديقة':
+                        csv_file = "حدائق.csv"
+                    elif facility_type == 'سوبرماركت':
+                        csv_file = "سوبرماركت.csv"
+                    elif facility_type == 'مول':
+                        csv_file = "مول.csv"
+                    
+                    if csv_file:
+                        response = self.search_service.search_entity(csv_file, facility_name)
+            
+            elif query_analysis['query_type'] == 'facility_search':
+                # بحث عن مرفق باسمه
+                facility_name = query_analysis['entities'].get('facility_name')
+                facility_type = query_analysis['entities'].get('facility_type')
                 
-                # البحث عن المرفق
-                if csv_file:
-                    search_result = self.search_service.search_entity(csv_file, facility_name)
-                    self.add_to_history(user_id, original_message, search_result)
-                    return search_result
+                if facility_name and facility_type:
+                    # تحديد ملف CSV المناسب
+                    csv_file = None
+                    if facility_type == 'مدرسة':
+                        csv_file = "المدارس.csv"
+                    elif facility_type == 'مستشفى':
+                        csv_file = "مستشفى.csv"
+                    elif facility_type == 'حديقة':
+                        csv_file = "حدائق.csv"
+                    elif facility_type == 'سوبرماركت':
+                        csv_file = "سوبرماركت.csv"
+                    elif facility_type == 'مول':
+                        csv_file = "مول.csv"
+                    
+                    if csv_file:
+                        response = self.search_service.search_entity(csv_file, facility_name)
+            else:
+                # إذا لم يتم التعرف على نوع الاستعلام بواسطة معالج الاستعلامات، 
+                # استخدم آلية المعالجة القديمة
+                response = self._fallback_processing(cleaned_message)
+                    
+                # التحقق مما إذا كان لدينا حي موصى به من المعالجة الاحتياطية
+                if "حي" in response:
+                    # محاولة استخراج اسم الحي من الرسالة
+                    for neighborhood in self.data_loader.get_available_neighborhoods():
+                        if neighborhood in response:
+                            recommended_neighborhood = neighborhood
+                            break
+            
+            # إذا تم التوصية بحي، قم بحساب وإضافة معلومات المسافة
+            if recommended_neighborhood:
+                distance = None
+                
+                # إذا تم توفير الإحداثيات من المستخدم، استخدمها
+                if user_latitude is not None and user_longitude is not None:
+                    distance = self._calculate_distance_to_neighborhood(
+                        recommended_neighborhood, user_latitude, user_longitude
+                    )
                 else:
-                    # البحث في جميع المرافق إذا لم يتم تحديد نوع
-                    search_result = self.search_service.search_all_facilities(facility_name)
-                    self.add_to_history(user_id, original_message, search_result)
-                    return search_result
+                    # محاولة استخدام طريقة تحديد الموقع القائمة على IP كاحتياطي
+                    distance = self.location_integration.calculate_distance_to_neighborhood(recommended_neighborhood)
+                
+                # إضافة معلومات المسافة إلى الرد إذا تم حسابها
+                if distance is not None:
+                    distance_message = self.location_integration.format_distance_message(recommended_neighborhood, distance)
+                    response += f"\n\n{distance_message}"
             
-            # استخدام المعالجة الاحتياطية إذا لم يتم تحديد نوع الاستعلام
-            fallback_response = self._fallback_processing(cleaned_message)
-            self.add_to_history(user_id, original_message, fallback_response)
-            return fallback_response
+            # إضافة المحادثة إلى التاريخ
+            self.add_to_history(user_id, cleaned_message, response)
             
+            return response
+                
         except Exception as e:
-            # تسجيل الخطأ
             logger.error(f"خطأ في معالجة الرسالة: {str(e)}")
-            
-            # محاولة توليد رد عام
-            try:
-                fallback = self._generate_response(user_message)
-                self.add_to_history(user_id, original_message, fallback)
-                return fallback
-            except:
-                # رسالة خطأ عامة في حالة فشل كل شيء
-                error_message = "عذراً، حدث خطأ أثناء معالجة طلبك. يرجى المحاولة مرة أخرى."
-                self.add_to_history(user_id, original_message, error_message)
-                return error_message
+            response = "عذراً، حدث خطأ ما. هل يمكنك إعادة صياغة طلبك من فضلك؟"
+            self.add_to_history(user_id, user_message, response)
+            return response
+
 
     def _handle_short_response(self, user_id: str, cleaned_message: str) -> Optional[str]:
         """
@@ -560,118 +566,51 @@ class NeighborhoodChatbot:
         
     def _summarize_facilities(self, facility_info: str, neighborhood_name: str, facility_type: str) -> str:
         """
-        تلخيص معلومات المرافق لإدراجها في رد الشاتبوت.
+        تلخيص معلومات المرافق وعرض عدد قليل منها
         
         Args:
-            facility_info: نص معلومات المرفق الكامل
+            facility_info: النص الكامل لمعلومات المرافق
             neighborhood_name: اسم الحي
             facility_type: نوع المرفق
             
         Returns:
-            str: ملخص منسق
+            str: معلومات ملخصة عن المرافق
         """
-        try:
-            # تنظيف اسم الحي
-            clean_name = neighborhood_name.replace("حي ", "").strip()
-            formatted_name = f"حي {clean_name}" if not neighborhood_name.startswith("حي") else neighborhood_name
-            
-            # إذا لم يتم العثور على المرافق
-            if "لم يتم العثور" in facility_info:
-                facility_type_display = {
-                    "مدرسة": "مدارس",
-                    "مستشفى": "مستشفيات أو مراكز طبية",
-                    "حديقة": "حدائق أو متنزهات",
-                    "سوبرماركت": "محلات سوبرماركت",
-                    "مول": "مولات أو مراكز تسوق"
-                }.get(facility_type, facility_type)
-                
-                return f"لم نتمكن من العثور على {facility_type_display} في {formatted_name} في قاعدة بياناتنا."
-            
-            # استخراج عدد المرافق
-            count_match = re.search(r'\((\d+)\)', facility_info)
-            count = int(count_match.group(1)) if count_match else 0
-            
-            # استخراج أسماء المرافق
-            facility_names = re.findall(r'• ([\u0600-\u06FF\s\d]+)', facility_info)
-            
-            # تحديد صيغة العرض حسب نوع المرفق
-            if facility_type == "مدرسة":
-                facility_type_display = "المدارس"
-                if count == 1:
-                    result = f"يوجد في {formatted_name} مدرسة واحدة"
-                elif count == 2:
-                    result = f"يوجد في {formatted_name} مدرستان"
-                elif count <= 10:
-                    result = f"يوجد في {formatted_name} {count} مدارس"
-                else:
-                    result = f"يوجد في {formatted_name} العديد من المدارس، حيث يصل عددها إلى {count} مدرسة"
-            
-            elif facility_type == "مستشفى":
-                facility_type_display = "المستشفيات والمراكز الطبية"
-                if count == 1:
-                    result = f"يوجد في {formatted_name} مستشفى واحد"
-                elif count == 2:
-                    result = f"يوجد في {formatted_name} مستشفيان"
-                elif count <= 10:
-                    result = f"يوجد في {formatted_name} {count} مستشفيات ومراكز طبية"
-                else:
-                    result = f"يوجد في {formatted_name} العديد من المستشفيات والمراكز الطبية، حيث يصل عددها إلى {count} منشأة طبية"
-            
-            elif facility_type == "حديقة":
-                facility_type_display = "الحدائق والمتنزهات"
-                if count == 1:
-                    result = f"يوجد في {formatted_name} حديقة واحدة"
-                elif count == 2:
-                    result = f"يوجد في {formatted_name} حديقتان"
-                elif count <= 10:
-                    result = f"يوجد في {formatted_name} {count} حدائق ومتنزهات"
-                else:
-                    result = f"يوجد في {formatted_name} العديد من الحدائق والمتنزهات، حيث يصل عددها إلى {count} حديقة"
-            
-            elif facility_type == "سوبرماركت":
-                facility_type_display = "محلات السوبرماركت"
-                if count == 1:
-                    result = f"يوجد في {formatted_name} سوبرماركت واحد"
-                elif count == 2:
-                    result = f"يوجد في {formatted_name} سوبرماركت اثنان"
-                elif count <= 10:
-                    result = f"يوجد في {formatted_name} {count} محلات سوبرماركت"
-                else:
-                    result = f"يوجد في {formatted_name} العديد من محلات السوبرماركت، حيث يصل عددها إلى {count} متجر"
-            
-            elif facility_type == "مول":
-                facility_type_display = "المولات ومراكز التسوق"
-                if count == 1:
-                    result = f"يوجد في {formatted_name} مول واحد"
-                elif count == 2:
-                    result = f"يوجد في {formatted_name} مولان"
-                elif count <= 10:
-                    result = f"يوجد في {formatted_name} {count} مولات ومراكز تسوق"
-                else:
-                    result = f"يوجد في {formatted_name} العديد من المولات ومراكز التسوق، حيث يصل عددها إلى {count} مركز"
-            
-            else:
-                facility_type_display = "المرافق"
-                result = f"يوجد في {formatted_name} {count} من {facility_type}"
-            
-            # إضافة أمثلة إذا توفرت
-            if facility_names:
-                if len(facility_names) == 1:
-                    result += f"، مثل {facility_names[0]}"
-                elif len(facility_names) > 1:
-                    names_str = " و".join([", ".join(facility_names[:-1]), facility_names[-1]])
-                    result += f"، مثل {names_str}"
-            
-            result += "."
-            
-            # إضافة دعوة للإجراء
-            result += f" يمكنك السؤال عن المزيد من المعلومات حول {facility_type_display} في {formatted_name} إذا كنت مهتمًا."
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"خطأ في تلخيص معلومات المرافق: {str(e)}")
-            return f"يوجد عدد من {facility_type} في {neighborhood_name}."
+        # التحقق من وجود مرافق
+        if "لم يتم العثور" in facility_info:
+            return f"لم يتم العثور على {facility_type} في {neighborhood_name}."
+        
+        # تحديد الاسم الجماعي المناسب للمرفق
+        facility_plural = {
+            "مدرسة": "المدارس",
+            "مستشفى": "المستشفيات والمراكز الطبية",
+            "حديقة": "الحدائق والمتنزهات",
+            "سوبرماركت": "محلات السوبرماركت",
+            "مول": "المولات ومراكز التسوق"
+        }.get(facility_type, facility_type)
+        
+        # عنوان الرد
+        response = f"إليك أبرز {facility_plural} في حي {neighborhood_name}:\n\n"
+        
+        # استخراج 2-3 مرافق فقط
+        sample_facilities = self._extract_sample_facilities(facility_info, 2)
+        if sample_facilities:
+            response += sample_facilities + "\n\n"
+        
+        # استخراج عدد المرافق الكلي من النص
+        total_count = 0
+        count_match = re.search(r'\((\d+)\)', facility_info)
+        if count_match:
+            total_count = int(count_match.group(1))
+        
+        # إضافة معلومات إحصائية
+        if total_count > 2:
+            response += f"يوجد إجمالي {total_count} من {facility_plural} في الحي.\n"
+        
+        # إضافة تلميح
+        response += f"لعرض القائمة الكاملة، اكتب 'اعرض جميع {facility_plural} في {neighborhood_name}'"
+        
+        return response
 
     def _extract_sample_facilities(self, facility_info: str, count: int = 1) -> str:
         """
@@ -1414,406 +1353,7 @@ class NeighborhoodChatbot:
       """
       self.db['Knowledge_base'].insert_one(data)
 
-    def _build_comprehensive_neighborhood_response(self, neighborhood_name: str, query_analysis: Dict) -> str:
-        """
-        بناء رد شامل ومفصّل عن الحي الموصى به - يتبع نموذج الرد الشامل
-        
-        Args:
-            neighborhood_name: اسم الحي
-            query_analysis: نتائج تحليل الاستعلام
-            
-        Returns:
-            str: رد شامل عن الحي
-        """
-        try:
-            # الحصول على معلومات الحي
-            neighborhood_info = self.data_loader.find_neighborhood_info(neighborhood_name)
-            if not neighborhood_info:
-                return f"أقترح عليك حي {neighborhood_name}. لم يتم العثور على معلومات تفصيلية عن هذا الحي."
-            
-            # تنظيف اسم الحي
-            clean_name = neighborhood_name.replace("حي ", "").strip()
-            formatted_name = f"حي {clean_name}" if not neighborhood_name.startswith("حي") else neighborhood_name
-            
-            # بناء الرد الشامل
-            response = f"أقترح عليك {formatted_name}. "
-            
-            # إضافة مقدمة بناءً على نوع الاستعلام
-            if 'budget' in query_analysis.get('entities', {}):
-                response += f"بناءً على تجربة الباحثين عن العقارات السابقين، أقترح عليك البحث في {formatted_name}. "
-            elif 'facility_type' in query_analysis.get('entities', {}):
-                facility_type = query_analysis['entities']['facility_type']
-                response += f"بناءً على طلبك للبحث عن حي به {self._get_facility_plural_name(facility_type)}، "
-            elif 'preferred_location' in query_analysis.get('entities', {}):
-                preferred_location = query_analysis['entities']['preferred_location']
-                response += f"بناءً على تفضيلك للموقع في منطقة {preferred_location}، "
-            
-            # إضافة وصف للحي وموقعه
-            if 'الوصف' in neighborhood_info:
-                response += f"{neighborhood_info['الوصف']} "
-            elif 'وصف_الحي' in neighborhood_info:
-                response += f"{neighborhood_info['وصف_الحي']} "
-            else:
-                # تكوين وصف عام
-                locations = {
-                    'شمال': 'شمال',
-                    'جنوب': 'جنوب',
-                    'شرق': 'شرق',
-                    'غرب': 'غرب',
-                    'وسط': 'وسط'
-                }
-                
-                location = None
-                for loc_key, loc_value in locations.items():
-                    if loc_key in neighborhood_info:
-                        location = loc_value
-                        break
-                
-                if location:
-                    response += f"يعتبر {formatted_name} من الأحياء {self._get_age_description(neighborhood_info)} والشهيرة في {location} مدينة الرياض، وهو من الأحياء التابعة لبلدية {self._get_municipality(neighborhood_info)}. "
-                else:
-                    response += f"يعتبر {formatted_name} من الأحياء {self._get_age_description(neighborhood_info)} في مدينة الرياض، وهو من الأحياء التابعة لبلدية {self._get_municipality(neighborhood_info)}. "
-            
-            # إضافة معلومات عن المميزات والمعالم
-            features = self._get_neighborhood_features(neighborhood_info)
-            if features:
-                response += f"{features} "
-                
-            # إضافة معلومات عن سهولة الوصول والطرق
-            accessibility = self._get_accessibility_info(neighborhood_info)
-            if accessibility:
-                response += f"{accessibility} "
-            
-            # إضافة معلومات عن المرافق والخدمات
-            services = self._get_services_info(neighborhood_info)
-            if services:
-                response += f"{services} "
-            
-            # إضافة معلومات الأسعار إذا كانت متوفرة
-            prices = self._get_price_info(neighborhood_info)
-            if prices:
-                response += f"{prices} "
-            
-            # إضافة ملخص للمميزات
-            advantages = self._get_advantages_summary(neighborhood_info)
-            if advantages:
-                response += f"{advantages} "
-            
-            # إضافة معلومات عن المرافق المطلوبة إذا كانت محددة
-            if 'facility_type' in query_analysis.get('entities', {}):
-                facility_type = query_analysis['entities']['facility_type']
-                facility_info = self.search_service.find_facilities_in_neighborhood(neighborhood_name, facility_type)
-                
-                # التحقق مما إذا كانت هناك معلومات حول المرافق
-                if "لم يتم العثور" not in facility_info:
-                    count_match = re.search(r'\((\d+)\)', facility_info)
-                    if count_match:
-                        count = int(count_match.group(1))
-                        facility_type_display = self._get_facility_plural_name(facility_type)
-                        
-                        # استخراج أسماء المرافق
-                        facility_names = re.findall(r'• ([\u0600-\u06FF\s\d]+)', facility_info)
-                        example_facilities = ""
-                        
-                        if facility_names:
-                            if len(facility_names) == 1:
-                                example_facilities = f"، مثل {facility_names[0]}"
-                            elif len(facility_names) > 1:
-                                names_str = " و".join([", ".join(facility_names[:-1]), facility_names[-1]])
-                                example_facilities = f"، مثل {names_str}"
-                        
-                        response += f"ويتوفر في {formatted_name} العديد من {facility_type_display} حيث يصل عددها إلى {count}{example_facilities}. "
-            
-            # إضافة دعوة للإجراء
-            response += f"للمزيد من المعلومات عن {formatted_name}، يمكنك الاستفسار عن أي جانب محدد ترغب في معرفته."
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"خطأ في بناء الرد الشامل للحي: {str(e)}")
-            # استخدام الرد البسيط في حالة الفشل
-            return self._build_detailed_neighborhood_response(neighborhood_name)
+
     
-    def _get_facility_plural_name(self, facility_type: str) -> str:
-        """
-        الحصول على الاسم الجمعي للمرفق
-        
-        Args:
-            facility_type: نوع المرفق
             
-        Returns:
-            str: الاسم الجمعي للمرفق
-        """
-        facility_plural = {
-            "مدرسة": "المدارس",
-            "مستشفى": "المستشفيات والمراكز الطبية",
-            "حديقة": "الحدائق والمتنزهات",
-            "سوبرماركت": "محلات السوبرماركت",
-            "مول": "المولات ومراكز التسوق"
-        }
-        
-        return facility_plural.get(facility_type, facility_type)
-    
-    def _get_age_description(self, neighborhood_info: Dict) -> str:
-        """
-        تحديد وصف عمر الحي (حديث، قديم، إلخ)
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: وصف عمر الحي
-        """
-        # محاولة استخراج العمر من خصائص الحي
-        if 'العمر' in neighborhood_info:
-            age = neighborhood_info['العمر']
-            if isinstance(age, (int, float)) or (isinstance(age, str) and age.isdigit()):
-                age_num = int(float(age))
-                if age_num < 10:
-                    return "الحديثة"
-                elif age_num < 20:
-                    return "المتوسطة العمر"
-                else:
-                    return "القديمة"
-        
-        # محاولة استخراج نوع الحي (حديث أو قديم) من الوصف
-        if 'التصنيف' in neighborhood_info:
-            classification = neighborhood_info['التصنيف'].lower()
-            if 'حديث' in classification:
-                return "الحديثة"
-            elif 'قديم' in classification:
-                return "القديمة"
-            
-        # استخدام القيمة الافتراضية
-        return "المعروفة"
-    
-    def _get_municipality(self, neighborhood_info: Dict) -> str:
-        """
-        استخراج اسم البلدية التي يتبع لها الحي
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: اسم البلدية
-        """
-        municipality_keys = ['البلدية', 'اسم_البلدية', 'بلدية']
-        
-        for key in municipality_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                return neighborhood_info[key]
-        
-        # القيمة الافتراضية
-        return "الرياض"
-    
-    def _get_neighborhood_features(self, neighborhood_info: Dict) -> str:
-        """
-        استخراج المميزات والمعالم الرئيسية للحي
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: وصف المميزات والمعالم
-        """
-        features = []
-        
-        feature_keys = [
-            'المميزات', 'مميزات_الحي', 'المعالم', 'معالم_الحي', 
-            'الجذب', 'عوامل_الجذب', 'المناطق_الترفيهية'
-        ]
-        
-        for key in feature_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                if isinstance(neighborhood_info[key], list):
-                    features.extend(neighborhood_info[key])
-                else:
-                    features.append(neighborhood_info[key])
-        
-        if not features:
-            # محاولة إنشاء وصف للمعالم بناءً على معلومات أخرى
-            if 'الترفيه' in neighborhood_info and neighborhood_info['الترفيه']:
-                features.append(f"يتوفر فيه {neighborhood_info['الترفيه']}")
-            
-            # إضافة معلومات عن المساحات الخضراء إذا توفرت
-            if 'المساحات_الخضراء' in neighborhood_info and neighborhood_info['المساحات_الخضراء']:
-                features.append(f"يضم {neighborhood_info['المساحات_الخضراء']}")
-        
-        if features:
-            # تنظيف القائمة وإزالة التكرار
-            unique_features = list(set([feature.strip() for feature in features if feature.strip()]))
-            
-            if len(unique_features) == 1:
-                return f"حيث {unique_features[0]}."
-            else:
-                features_text = "، ".join(unique_features[:-1]) + " و" + unique_features[-1]
-                return f"حيث {features_text}."
-        
-        return ""
-    
-    def _get_accessibility_info(self, neighborhood_info: Dict) -> str:
-        """
-        استخراج معلومات سهولة الوصول والطرق
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: وصف سهولة الوصول والطرق
-        """
-        accessibility_info = []
-        
-        access_keys = [
-            'الطرق', 'الطرق_الرئيسية', 'سهولة_الوصول', 
-            'المخارج', 'المداخل', 'الوصول'
-        ]
-        
-        for key in access_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                if isinstance(neighborhood_info[key], list):
-                    accessibility_info.extend(neighborhood_info[key])
-                else:
-                    accessibility_info.append(neighborhood_info[key])
-        
-        if accessibility_info:
-            # تنظيف القائمة وإزالة التكرار
-            unique_info = list(set([info.strip() for info in accessibility_info if info.strip()]))
-            
-            return f"ويمتاز الحي بسهولة مخارجه ومداخله من {' و'.join(unique_info)}."
-        else:
-            # وصف افتراضي إذا لم تتوفر معلومات محددة
-            return "ويمتاز الحي بسهولة الوصول إليه من عدة طرق رئيسية."
-    
-    def _get_services_info(self, neighborhood_info: Dict) -> str:
-        """
-        استخراج معلومات المرافق والخدمات
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: وصف المرافق والخدمات
-        """
-        services_info = []
-        
-        service_keys = [
-            'الخدمات', 'المرافق', 'الخدمات_المتوفرة', 
-            'المرافق_المتوفرة', 'الخدمات_العامة'
-        ]
-        
-        for key in service_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                if isinstance(neighborhood_info[key], list):
-                    services_info.extend(neighborhood_info[key])
-                else:
-                    services_info.append(neighborhood_info[key])
-        
-        if services_info:
-            # تنظيف القائمة وإزالة التكرار
-            unique_services = list(set([service.strip() for service in services_info if service.strip()]))
-            
-            if len(unique_services) > 0:
-                return f"يتوفر في الحي العديد من المرافق والخدمات."
-        
-        # وصف افتراضي
-        return "يتوفر في الحي العديد من المرافق والخدمات."
-    
-    def _get_price_info(self, neighborhood_info: Dict) -> str:
-        """
-        استخراج معلومات الأسعار
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: وصف الأسعار
-        """
-        price_info = []
-        
-        # معلومات سعر المتر للفلل
-        villa_price_keys = ['سعر_المتر_للفلل', 'سعر_متر_الفلل', 'سعر_الفلل', 'متوسط_سعر_الفلل']
-        villa_price = None
-        
-        for key in villa_price_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                try:
-                    if isinstance(neighborhood_info[key], (int, float)):
-                        villa_price = neighborhood_info[key]
-                    else:
-                        # محاولة استخراج الرقم من النص
-                        price_text = neighborhood_info[key]
-                        numbers = re.findall(r'\d[\d,]*(?:\.\d+)?', str(price_text))
-                        if numbers:
-                            villa_price = float(numbers[0].replace(',', ''))
-                    break
-                except:
-                    pass
-        
-        # معلومات سعر المتر للشقق
-        apartment_price_keys = ['سعر_المتر_للشقق', 'سعر_متر_الشقق', 'سعر_الشقق', 'متوسط_سعر_الشقق']
-        apartment_price = None
-        
-        for key in apartment_price_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                try:
-                    if isinstance(neighborhood_info[key], (int, float)):
-                        apartment_price = neighborhood_info[key]
-                    else:
-                        # محاولة استخراج الرقم من النص
-                        price_text = neighborhood_info[key]
-                        numbers = re.findall(r'\d[\d,]*(?:\.\d+)?', str(price_text))
-                        if numbers:
-                            apartment_price = float(numbers[0].replace(',', ''))
-                    break
-                except:
-                    pass
-        
-        # بناء نص معلومات الأسعار
-        if villa_price is not None and apartment_price is not None:
-            return f"سعر المتر للفلل {villa_price:,} ريال، سعر المتر للشقق {apartment_price:,} ريال."
-        elif villa_price is not None:
-            return f"سعر المتر للفلل {villa_price:,} ريال."
-        elif apartment_price is not None:
-            return f"سعر المتر للشقق {apartment_price:,} ريال."
-            
-        return ""
-    
-    def _get_advantages_summary(self, neighborhood_info: Dict) -> str:
-        """
-        تلخيص مميزات الحي
-        
-        Args:
-            neighborhood_info: معلومات الحي
-            
-        Returns:
-            str: ملخص المميزات
-        """
-        advantages = []
-        
-        # فحص وجود المساحة المناسبة
-        area_keys = ['المساحة', 'مساحة_الحي']
-        for key in area_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                advantages.append("المساحة مناسبة")
-                break
-        
-        # فحص جودة الخدمات
-        if 'الخدمات' in neighborhood_info or 'المرافق' in neighborhood_info:
-            advantages.append("وجود خدمات جيدة")
-        
-        # فحص حداثة الحي
-        if self._get_age_description(neighborhood_info) == "الحديثة":
-            advantages.append("الحي حديث")
-        
-        # فحص مناسبة الأسعار
-        price_keys = ['سعر_المتر_للفلل', 'سعر_متر_الفلل', 'سعر_الفلل', 'سعر_المتر_للشقق', 'سعر_متر_الشقق']
-        for key in price_keys:
-            if key in neighborhood_info and neighborhood_info[key]:
-                advantages.append("السعر مناسب")
-                break
-        
-        if advantages:
-            advantages_text = "، ".join(advantages)
-            return f"ويتميز الحي بـ: {advantages_text}."
-        
-        return ""
+
