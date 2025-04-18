@@ -142,6 +142,68 @@ class QueryProcessor:
         # تنظيف الرسالة
         clean_message = user_message.strip()
         
+        # البحث عن أنماط محددة للطلبات بحي يحتوي على خصائص معينة أو في موقع معين
+        neighborhood_direction_patterns = [
+            r'دلني على حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+            r'دلني على حي قريب من ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+            r'دلني على حي ([\u0600-\u06FF\s]+?) وفيه ([\u0600-\u06FF\s]+)',
+            r'ارشدني إلى حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+            r'أرشدني إلى حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+            r'اقترح لي حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+            r'أقترح لي حي ([\u0600-\u06FF\s]+?)(?:\?|؟|$|\s)',
+        ]
+        
+        for pattern in neighborhood_direction_patterns:
+            match = re.search(pattern, clean_message)
+            if match:
+                # هذا طلب توصية بحي مع معايير
+                logger.info(f"تم تحديد طلب توصية بحي: {match.group(1)}")
+                result['query_type'] = 'neighborhood_recommendation'
+                result['intents'].add('neighborhood_recommendation')
+                
+                # استخراج معايير المكان
+                if 'قريب من' in clean_message or 'بالقرب من' in clean_message:
+                    result['entities']['location_preference'] = True
+                    # محاولة استخراج المنطقة المطلوبة (مثل "الشمال", "الجنوب", إلخ)
+                    location_patterns = [
+                        r'قريب من (?:منطقة |)([\u0600-\u06FF]+)',
+                        r'بالقرب من (?:منطقة |)([\u0600-\u06FF]+)'
+                    ]
+                    for loc_pattern in location_patterns:
+                        loc_match = re.search(loc_pattern, clean_message)
+                        if loc_match:
+                            location = loc_match.group(1).strip()
+                            result['entities']['preferred_location'] = location
+                            break
+                
+                # تحليل معايير المرافق
+                if 'وفيه' in clean_message or 'يوجد فيه' in clean_message or 'فيه' in clean_message:
+                    facility_patterns = [
+                        r'وفيه ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
+                        r'يوجد فيه ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)',
+                        r'فيه ([\u0600-\u06FF\s]+)(?:\?|؟|$|\s)'
+                    ]
+                    
+                    for fac_pattern in facility_patterns:
+                        fac_match = re.search(fac_pattern, clean_message)
+                        if fac_match:
+                            facilities_text = fac_match.group(1).strip()
+                            
+                            # تحديد نوع المرفق من النص
+                            for facility_type, keywords in self.facility_keywords.items():
+                                if any(keyword in facilities_text for keyword in keywords):
+                                    result['entities']['facility_type'] = facility_type
+                                    result['entities']['facilities_text'] = facilities_text
+                                    break
+                            break
+                
+                # استخراج معلومات شخصية إذا وجدت
+                person_info = self._extract_person_info(clean_message)
+                if person_info:
+                    result['entities'].update(person_info)
+                
+                return result
+        
         # البحث عن أنماط معينة للطلبات بحي يحتوي على خصائص معينة
         special_recommendation_patterns = [
             r'اقترح (?:لي|علي) حي (?:فيه|فيها|به|بها) ([\u0600-\u06FF\s]+)',
